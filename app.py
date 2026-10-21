@@ -16,8 +16,8 @@ import charts
 import rul_engine as E
 
 ROOT = Path(__file__).parent
-DATA = ROOT / "data"
-ASSETS = ROOT / "assets"
+REQUIRED = ["train.csv", "test.csv", "test_full_labels.csv", "machines_metadata.csv", "sample_upload.csv",
+            "report_results.json", "framework.png"]
 ICON = {"Critical": "⛔", "Plan maintenance": "🔧", "Watch": "👁", "Healthy": "✅"}
 DEMO = "Demo fleet (50 test blowers)"
 UPLOAD = "Upload my own CSV"
@@ -25,16 +25,41 @@ UPLOAD = "Upload my own CSV"
 st.set_page_config(page_title="Blower RUL Monitor", page_icon="⚙️", layout="wide")
 
 
+def find_file(name: str):
+    """Locate a data/asset file: data/ or assets/ next to app.py, the app folder itself, or any sub-folder.
+    This tolerates repositories where the folders were flattened during upload."""
+    for p in (ROOT / "data" / name, ROOT / "assets" / name, ROOT / name):
+        if p.is_file():
+            return p
+    hits = sorted(p for p in ROOT.rglob(name) if ".git" not in p.parts and ".venv" not in p.parts)
+    return hits[0] if hits else None
+
+
+_missing = [n for n in REQUIRED if find_file(n) is None]
+if _missing:
+    st.title("⚙️ Blower RUL Monitor")
+    st.error("Some files the app needs were not found next to app.py: **" + ", ".join(_missing) + "**.")
+    st.markdown(
+        "The app looks for them in a `data` folder (CSV files) and an `assets` folder (JSON and PNG) beside "
+        "`app.py`, or directly beside `app.py`. On GitHub, open your repository, click **Add file → Upload files**, "
+        "drag the missing files (or the whole `data` and `assets` folders) onto the page, commit, then reboot the "
+        "app from **Manage app**.")
+    present = sorted(str(p.relative_to(ROOT)) for p in ROOT.rglob("*")
+                     if p.is_file() and ".git" not in p.parts)[:60]
+    st.caption("Files found in the app folder: " + (", ".join(present) if present else "none"))
+    st.stop()
+
+
 # ------------------------------------------------------------------------------------------ cache
 @st.cache_resource(show_spinner="Training the RUL model on 150 run-to-failure histories (first start only)…")
 def get_engine():
-    return E.fit_engine(pd.read_csv(DATA / "train.csv"))
+    return E.fit_engine(pd.read_csv(find_file("train.csv")))
 
 
 @st.cache_data(show_spinner=False)
 def load_demo():
-    return (pd.read_csv(DATA / "test.csv"), pd.read_csv(DATA / "test_full_labels.csv"),
-            pd.read_csv(DATA / "machines_metadata.csv"))
+    return (pd.read_csv(find_file("test.csv")), pd.read_csv(find_file("test_full_labels.csv")),
+            pd.read_csv(find_file("machines_metadata.csv")))
 
 
 @st.cache_data(show_spinner="Computing RUL, intervals and health index…")
@@ -45,14 +70,14 @@ def run_predictions(_engine, df: pd.DataFrame, key: str):
 
 @st.cache_data(show_spinner=False)
 def report_results():
-    return json.loads((ASSETS / "report_results.json").read_text())
+    return json.loads(find_file("report_results.json").read_text(encoding="utf-8"))
 
 
 @st.cache_data(show_spinner=False)
 def example_readings():
     """Typical readings ~10–15 days before failure for each failure mode (from the training fleet)."""
-    tr = pd.read_csv(DATA / "train.csv")
-    meta = pd.read_csv(DATA / "machines_metadata.csv").set_index("machine_id")
+    tr = pd.read_csv(find_file("train.csv"))
+    meta = pd.read_csv(find_file("machines_metadata.csv")).set_index("machine_id")
     tr["fm"] = tr["machine_id"].map(meta["failure_mode"])
     tr["loc"] = tr["machine_id"].map(meta["fault_location"])
     late = tr[tr["RUL_hours"].between(240, 360)]
@@ -107,7 +132,7 @@ else:
     with st.sidebar.expander("Required columns"):
         st.markdown("`machine_id`, `cycle` **or** `timestamp`, and the ten features:\n\n"
                     + "\n".join(f"- `{c}` ({E.LABELS[c][1]})" for c in E.FEATURES))
-        st.download_button("Download a sample file", (DATA / "sample_upload.csv").read_bytes(),
+        st.download_button("Download a sample file", find_file("sample_upload.csv").read_bytes(),
                            "sample_upload.csv", "text/csv")
     if up is not None:
         raw = pd.read_csv(up)
@@ -352,7 +377,7 @@ def page_model():
         st.caption("The health index warns about 110 days before failure and also catches winding faults, which do "
                    "not raise vibration. About 10 % of machines raised an alarm during their healthy period.")
     with t4:
-        show_image(str(ASSETS / "framework.png"))
+        show_image(str(find_file("framework.png")))
         st.markdown(
             "1. **Cleaning:** gaps are interpolated per machine; spikes are removed with a 3-point rolling median.\n"
             "2. **Load compensation:** each sensor is corrected for load (load and load², fitted on healthy data).\n"
